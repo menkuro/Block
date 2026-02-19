@@ -8,16 +8,11 @@
     :root {
       --bg: #0b0f1a;
       --panel: rgba(255,255,255,0.08);
-      --panel2: rgba(255,255,255,0.12);
       --text: rgba(255,255,255,0.92);
       --muted: rgba(255,255,255,0.65);
       --accent: #7dd3fc;
-      --danger: #fb7185;
-      --good: #86efac;
-      --warn: #fde047;
-      --vio: #c4b5fd;
     }
-    html, body { height: 100%; margin: 0; background: radial-gradient(1200px 800px at 70% 20%, #16223f 0%, var(--bg) 55%, #070a12 100%); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", Meiragino, Meiryo, sans-serif; }
+    html, body { height: 100%; margin: 0; background: radial-gradient(1200px 800px at 70% 20%, #16223f 0%, var(--bg) 55%, #070a12 100%); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", Meiryo, sans-serif; }
     .wrap { display: grid; grid-template-rows: auto 1fr auto; height: 100%; }
     header, footer { padding: 12px 14px; display: flex; align-items: center; gap: 12px; }
     header { border-bottom: 1px solid rgba(255,255,255,0.10); background: rgba(0,0,0,0.15); backdrop-filter: blur(8px); }
@@ -61,7 +56,6 @@
       pointer-events: none;
       flex-wrap: wrap;
     }
-    .hud .pill { pointer-events: none; }
     .toast {
       position: absolute;
       inset: auto 12px 12px 12px;
@@ -106,7 +100,7 @@
   </header>
 
   <main>
-    <div class="stage" id="stage">
+    <div class="stage">
       <canvas id="c" width="960" height="720" aria-label="ブロック崩しのゲーム画面"></canvas>
       <div class="hud" aria-hidden="true">
         <div class="pill">スコア <strong id="score">0</strong></div>
@@ -119,7 +113,7 @@
         <div class="card" id="hintCard">
           <h2>操作</h2>
           <p>
-            <span class="kbd">←</span><span class="kbd">→</span> or <span class="kbd">A</span><span class="kbd">D</span> / マウス・タッチでパドル移動。
+            <span class="kbd">←</span><span class="kbd">→</span> or <span class="kbd">A</span><span class="kbd">D</span> / マウス・タッチで移動。
             <span class="kbd">Space</span>で開始。<span class="kbd">P</span>で停止。<span class="kbd">R</span>でリスタート。
           </p>
         </div>
@@ -137,11 +131,11 @@
   </main>
 
   <footer>
-    <label class="toggle pill" title="音の優先度は高い。なのに切りたがる人間は多い。">
+    <label class="toggle pill" title="音の優先度は高い。切りたきゃ切れ。">
       <input type="checkbox" id="togSound" checked />
       <span>サウンド</span>
     </label>
-    <label class="toggle pill" title="目が疲れるなら切れ。ゲームは拷問じゃない。">
+    <label class="toggle pill" title="目が疲れるなら切れ。">
       <input type="checkbox" id="togFlash" checked />
       <span>フラッシュ/ヒットストップ</span>
     </label>
@@ -272,9 +266,11 @@
     item() { beep({ freq: 740, dur: 0.05, type: "triangle", gain: 0.10 }); setTimeout(() => beep({ freq: 1040, dur: 0.06, type: "triangle", gain: 0.10 }), 60); }
   };
 
-  // ===== Game State =====
+  // ===== Game constants =====
   const W = 960, H = 720;
+  const STEP = 1/60;
 
+  // ===== State =====
   const state = {
     running: false,
     paused: false,
@@ -291,8 +287,8 @@
     shake: 0,
     hitStop: 0,
 
-    // 連続減少対策ロック（保険）
     respawnLock: 0,
+    itemPity: 0,
 
     keys: new Set(),
     pointerX: null,
@@ -326,13 +322,22 @@
   const powerups = [];
 
   const ITEM = {
-    WIDE: { key: "WIDE", name: "ワイド", desc: "パドル拡大(15秒)", color: "rgba(134,239,172,0.95)", tag: "W" },
-    SLOW: { key: "SLOW", name: "スロー", desc: "ボール減速(10秒)", color: "rgba(253,224,71,0.95)", tag: "S" },
-    PIERCE: { key: "PIERCE", name: "貫通", desc: "ブロック貫通(8秒)", color: "rgba(196,181,253,0.95)", tag: "P" },
-    LIFE: { key: "LIFE", name: "1UP", desc: "残機+1(上限5)", color: "rgba(125,211,252,0.95)", tag: "+1" },
+    WIDE:   { key: "WIDE",   name: "ワイド", desc: "パドル拡大(15秒)", color: "rgba(134,239,172,0.95)", tag: "W" },
+    SLOW:   { key: "SLOW",   name: "スロー", desc: "ボール減速(10秒)", color: "rgba(253,224,71,0.95)",  tag: "S" },
+    PIERCE: { key: "PIERCE", name: "貫通",   desc: "ブロック貫通(8秒)",  color: "rgba(196,181,253,0.95)", tag: "P" },
+    LIFE:   { key: "LIFE",   name: "1UP",    desc: "残機+1(上限5)",      color: "rgba(125,211,252,0.95)", tag: "+1" },
   };
 
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function length(vx, vy) { return Math.hypot(vx, vy); }
+
+  function normalizeBallSpeed(target) {
+    const sp = length(ball.vx, ball.vy);
+    if (sp < 1e-3) return;
+    const mul = target / sp;
+    ball.vx *= mul;
+    ball.vy *= mul;
+  }
 
   function resetBall(stuck = true) {
     ball.stuck = stuck;
@@ -361,12 +366,12 @@
     const cols = bricks.cols;
     const colors = [
       [0.15, 0.6, 0.95],
-      [0.2, 0.9, 0.65],
-      [0.95, 0.75, 0.25],
-      [0.98, 0.45, 0.55],
-      [0.75, 0.55, 0.98],
-      [0.35, 0.85, 0.98],
-      [0.95, 0.95, 0.95],
+      [0.2,  0.9, 0.65],
+      [0.95, 0.75,0.25],
+      [0.98, 0.45,0.55],
+      [0.75, 0.55,0.98],
+      [0.35, 0.85,0.98],
+      [0.95, 0.95,0.95],
     ];
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
@@ -377,10 +382,8 @@
         bricks.list.push({
           x: bricks.left + c * (bricks.w + bricks.pad),
           y: bricks.top + r * (bricks.h + bricks.pad),
-          w: bricks.w,
-          h: bricks.h,
-          hp,
-          hpMax: hp,
+          w: bricks.w, h: bricks.h,
+          hp, hpMax: hp,
           col,
           alive: true,
           pop: 0,
@@ -388,6 +391,7 @@
       }
     }
     powerups.length = 0;
+    state.itemPity = 0;
   }
 
   // ===== UX =====
@@ -404,9 +408,34 @@
     ui.msgTitle.textContent = title;
     ui.msgBody.textContent = body;
     ui.msgCard.style.display = "block";
-    msgTimer = ms / 1000;
+    msgTimer = ms/1000;
   }
   function hideMsg() { ui.msgCard.style.display = "none"; msgTimer = 0; }
+
+  function syncUI() {
+    ui.score.textContent = String(Math.floor(state.score));
+    ui.lives.textContent = String(state.lives);
+    ui.level.textContent = String(state.level);
+    ui.mult.textContent = state.mult.toFixed(1);
+
+    const tags = [];
+    if (effects.wide > 0) tags.push("ワイド");
+    if (effects.slow > 0) tags.push("スロー");
+    if (effects.pierce > 0) tags.push("貫通");
+    if (tags.length) {
+      ui.buffs.style.display = "inline-flex";
+      ui.buffText.textContent = tags.join(" / ");
+    } else {
+      ui.buffs.style.display = "none";
+    }
+  }
+
+  function hitFeedback(intensity = 1.0) {
+    if (!state.flashEnabled) return;
+    state.flash = clamp(state.flash + 0.6 * intensity, 0, 1);
+    state.shake = clamp(state.shake + 5 * intensity, 0, 10);
+    state.hitStop = clamp(state.hitStop + 0.03 * intensity, 0, 0.09);
+  }
 
   // ===== Restart =====
   function restart(all = true) {
@@ -417,6 +446,7 @@
     state.shake = 0;
     state.hitStop = 0;
     state.respawnLock = 0;
+    state.itemPity = 0;
 
     state.mult = 1.0;
     state.speedMul = parseFloat(ui.selSpeed.value || "1.0");
@@ -430,10 +460,12 @@
       state.score = 0;
       state.lives = 3;
     }
+
     makeLevel(state.level);
     paddle.x = W/2;
     paddle.vx = 0;
     resetBall(true);
+
     ui.hintCard.style.display = state.startedOnce ? "none" : "block";
     clearStatus();
     hideMsg();
@@ -442,24 +474,54 @@
   }
 
   // ===== Input =====
-  window.addEventListener("keydown", (e) => {
-    const k = e.key.toLowerCase();
-    if (["arrowleft","arrowright","a","d","p","r"," ","space"].includes(k) || e.code === "Space") e.preventDefault();
-    state.keys.add(k);
-    if (e.code === "Space" || k === " " || k === "space") userStart();
-    else if (k === "p") togglePause();
-    else if (k === "r") restart(false);
-  }, { passive: false });
-
-  window.addEventListener("keyup", (e) => {
-    state.keys.delete(e.key.toLowerCase());
-  });
-
   function pointerToWorld(clientX) {
     const rect = canvas.getBoundingClientRect();
     const nx = (clientX - rect.left) / rect.width;
     return clamp(nx * W, 0, W);
   }
+
+  function userStart() {
+    if (!state.running) state.running = true;
+    state.startedOnce = true;
+    ui.hintCard.style.display = "none";
+
+    if (state.gameOver) return;
+
+    if (state.paused) {
+      clearStatus();
+      state.paused = false;
+      announce("再開");
+    }
+
+    if (ball.stuck) {
+      state.respawnLock = 0;
+      ball.stuck = false;
+      normalizeBallSpeed(ball.speed * 1.02);
+      announce("開始");
+      if (audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(()=>{});
+    }
+  }
+
+  function togglePause() {
+    if (!state.running || state.gameOver) return;
+    state.paused = !state.paused;
+    if (state.paused) { setStatus("一時停止", "Spaceで再開。"); announce("一時停止"); }
+    else { clearStatus(); announce("再開"); if (audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(()=>{}); }
+  }
+
+  window.addEventListener("keydown", (e) => {
+    const k = e.key.toLowerCase();
+    if (["arrowleft","arrowright","a","d","p","r"," ","space"].includes(k) || e.code === "Space") e.preventDefault();
+    state.keys.add(k);
+
+    if (e.code === "Space" || k === " " || k === "space") userStart();
+    else if (k === "p") togglePause();
+    else if (k === "r") restart(state.gameOver || state.lives <= 0);
+  }, { passive: false });
+
+  window.addEventListener("keyup", (e) => {
+    state.keys.delete(e.key.toLowerCase());
+  });
 
   function onPointerDown(e) {
     state.pointerActive = true;
@@ -472,10 +534,7 @@
     const x = (e.touches ? e.touches[0].clientX : e.clientX);
     state.pointerX = pointerToWorld(x);
   }
-  function onPointerUp() {
-    state.pointerActive = false;
-    state.pointerX = null;
-  }
+  function onPointerUp() { state.pointerActive = false; state.pointerX = null; }
 
   canvas.addEventListener("mousedown", onPointerDown);
   window.addEventListener("mousemove", onPointerMove);
@@ -496,49 +555,8 @@
     syncUI();
   });
 
-  ui.btnRestart.addEventListener("click", () => restart(false));
+  ui.btnRestart.addEventListener("click", () => restart(state.gameOver || state.lives <= 0));
   ui.btnPause.addEventListener("click", () => togglePause());
-
-  function togglePause() {
-    if (!state.running) return;
-    state.paused = !state.paused;
-    if (state.paused) { setStatus("一時停止", "Spaceで再開。"); announce("一時停止"); }
-    else { clearStatus(); announce("再開"); if (audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(()=>{}); }
-  }
-
-  function userStart() {
-    if (!state.running) state.running = true;
-    state.startedOnce = true;
-    ui.hintCard.style.display = "none";
-    if (state.gameOver) return;
-
-    if (state.paused) { clearStatus(); state.paused = false; announce("再開"); }
-
-    if (ball.stuck) {
-      state.respawnLock = 0;
-      ball.stuck = false;
-      normalizeBallSpeed(ball.speed * 1.02);
-      announce("開始");
-      if (audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(()=>{});
-    }
-  }
-
-  // ===== Physics helpers =====
-  function length(vx, vy) { return Math.hypot(vx, vy); }
-  function normalizeBallSpeed(target) {
-    const sp = length(ball.vx, ball.vy);
-    if (sp < 1e-3) return;
-    const mul = target / sp;
-    ball.vx *= mul;
-    ball.vy *= mul;
-  }
-
-  function hitFeedback(intensity = 1.0) {
-    if (!state.flashEnabled) return;
-    state.flash = clamp(state.flash + 0.6 * intensity, 0, 1);
-    state.shake = clamp(state.shake + 5 * intensity, 0, 10);
-    state.hitStop = clamp(state.hitStop + 0.03 * intensity, 0, 0.09);
-  }
 
   // ===== Collision =====
   function rectCircleCollide(rx, ry, rw, rh, cx, cy, cr) {
@@ -547,14 +565,13 @@
     const dx = cx - px, dy = cy - py;
     return (dx*dx + dy*dy) <= cr*cr;
   }
-
   function rectRectCollide(ax, ay, aw, ah, bx, by, bw, bh) {
     return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
   }
 
   function resolveBrickCollision(b) {
     const cx = ball.x, cy = ball.y;
-    const prevX = cx - ball.vx * (1/60), prevY = cy - ball.vy * (1/60);
+    const prevX = cx - ball.vx * STEP, prevY = cy - ball.vy * STEP;
     const bx = b.x, by = b.y, bw = b.w, bh = b.h;
 
     const fromLeft = prevX <= bx - ball.r;
@@ -600,8 +617,14 @@
   }
 
   function spawnItemFromBrick(b) {
-    const chance = 0.18 + Math.min(0.08, state.level * 0.01);
-    if (Math.random() > chance) return;
+    state.itemPity += 1;
+    const base = 0.35;
+    const chance = Math.min(0.55, base + state.level * 0.03);
+    const force = (state.itemPity >= 8);
+
+    if (!force && Math.random() > chance) return;
+
+    state.itemPity = 0;
     const it = pickItemType();
     powerups.push({
       x: b.x + b.w/2,
@@ -616,7 +639,7 @@
   }
 
   function applyItem(typeKey) {
-    const it = ITEM[typeKey] || null;
+    const it = ITEM[typeKey];
     if (!it) return;
 
     if (typeKey === "WIDE") effects.wide = Math.max(effects.wide, 15);
@@ -631,25 +654,7 @@
     syncUI();
   }
 
-  // ===== UI sync =====
-  function syncUI() {
-    ui.score.textContent = String(Math.floor(state.score));
-    ui.lives.textContent = String(state.lives);
-    ui.level.textContent = String(state.level);
-    ui.mult.textContent = state.mult.toFixed(1);
-
-    const tags = [];
-    if (effects.wide > 0) tags.push("ワイド");
-    if (effects.slow > 0) tags.push("スロー");
-    if (effects.pierce > 0) tags.push("貫通");
-    if (tags.length) {
-      ui.buffs.style.display = "inline-flex";
-      ui.buffText.textContent = tags.join(" / ");
-    } else {
-      ui.buffs.style.display = "none";
-    }
-  }
-
+  // ===== Progression =====
   function nextLevel() {
     state.level += 1;
     state.mult = clamp(state.mult + 0.15, 1.0, 2.0);
@@ -663,20 +668,21 @@
   }
 
   function loseLife() {
+    if (state.gameOver) return;
     if (state.respawnLock > 0) return;
-    state.respawnLock = 0.6;
+    state.respawnLock = 0.7;
 
-    state.lives -= 1;
+    state.lives = Math.max(0, state.lives - 1);
     state.mult = 1.0;
     SFX.lose();
     hitFeedback(1.2);
 
-    // 「残機が減り続ける」事故を根絶: 必ず停止
     state.paused = true;
 
     if (state.lives <= 0) {
       state.gameOver = true;
-      setStatus("ゲームオーバー", "Rでリスタート。苦労は忘れろ、スコアは残る。");
+      state.score = 0; // 要望どおり
+      setStatus("ゲームオーバー", "Rで最初から。スコアは0に戻した。");
       announce("ゲームオーバー");
     } else {
       resetBall(true);
@@ -700,7 +706,6 @@
     effects.wide = Math.max(0, effects.wide - dt);
     effects.slow = Math.max(0, effects.slow - dt);
     effects.pierce = Math.max(0, effects.pierce - dt);
-
     paddle.w = paddle.baseW * (effects.wide > 0 ? 1.35 : 1.0);
 
     if (state.paused) {
@@ -718,6 +723,7 @@
 
     const sm = state.speedMul;
 
+    // Paddle input
     let dir = 0;
     if (state.keys.has("arrowleft") || state.keys.has("a")) dir -= 1;
     if (state.keys.has("arrowright") || state.keys.has("d")) dir += 1;
@@ -732,6 +738,7 @@
     paddle.x += paddle.vx * dt * sm;
     paddle.x = clamp(paddle.x, paddle.w/2, W - paddle.w/2);
 
+    // Ball
     if (ball.stuck) {
       ball.x = paddle.x;
       ball.y = paddle.y - paddle.h/2 - ball.r - 2;
@@ -747,11 +754,12 @@
     ball.x += ball.vx * dt;
     ball.y += ball.vy * dt;
 
+    // Walls
     if (ball.x - ball.r <= 0) { ball.x = ball.r; ball.vx *= -1; SFX.wall(); hitFeedback(0.35); }
     else if (ball.x + ball.r >= W) { ball.x = W - ball.r; ball.vx *= -1; SFX.wall(); hitFeedback(0.35); }
-
     if (ball.y - ball.r <= 0) { ball.y = ball.r; ball.vy *= -1; SFX.wall(); hitFeedback(0.35); }
 
+    // Bottom
     if (state.respawnLock === 0 && (ball.y - ball.r > H + 40)) {
       loseLife();
       return;
@@ -759,10 +767,12 @@
 
     handlePaddleCollision();
 
+    // Bricks
     let aliveCount = 0;
     for (const b of bricks.list) {
       if (!b.alive) continue;
       aliveCount++;
+
       if (rectCircleCollide(b.x, b.y, b.w, b.h, ball.x, ball.y, ball.r)) {
         if (effects.pierce <= 0) resolveBrickCollision(b);
         b.hp -= 1;
@@ -783,10 +793,7 @@
 
         if (effects.pierce > 0) {
           const sp = length(ball.vx, ball.vy);
-          if (sp > 1e-3) {
-            ball.x += (ball.vx / sp) * 4;
-            ball.y += (ball.vy / sp) * 4;
-          }
+          if (sp > 1e-3) { ball.x += (ball.vx / sp) * 4; ball.y += (ball.vy / sp) * 4; }
         }
 
         syncUI();
@@ -794,6 +801,7 @@
       }
     }
 
+    // Items update
     const prx = paddle.x - paddle.w/2, pry = paddle.y - paddle.h/2;
     for (const p of powerups) {
       if (!p.alive) continue;
@@ -809,12 +817,11 @@
         p.alive = false;
       }
     }
-    for (let i = powerups.length - 1; i >= 0; i--) {
-      if (!powerups[i].alive) powerups.splice(i, 1);
-    }
+    for (let i = powerups.length - 1; i >= 0; i--) if (!powerups[i].alive) powerups.splice(i, 1);
 
     if (aliveCount === 0) nextLevel();
 
+    // decay
     state.flash = Math.max(0, state.flash - dt * 2.0);
     state.shake = Math.max(0, state.shake - dt * 20);
     state.mult = Math.max(1.0, state.mult - dt * 0.05);
@@ -842,12 +849,8 @@
     ctx.strokeStyle = "rgba(255,255,255,0.10)";
     ctx.lineWidth = 1;
     const step = 40;
-    for (let x = 0; x <= W; x += step) {
-      ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, H); ctx.stroke();
-    }
-    for (let y = 0; y <= H; y += step) {
-      ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(W, y + 0.5); ctx.stroke();
-    }
+    for (let x = 0; x <= W; x += step) { ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, H); ctx.stroke(); }
+    for (let y = 0; y <= H; y += step) { ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(W, y + 0.5); ctx.stroke(); }
     ctx.globalAlpha = 1;
 
     const g = ctx.createLinearGradient(0, 0, 0, 220);
@@ -868,35 +871,28 @@
     ctx.save();
     for (const b of bricks.list) {
       if (!b.alive) continue;
-
       const pop = b.pop;
-      b.pop = Math.max(0, b.pop - 1/60 * 6);
+      b.pop = Math.max(0, b.pop - STEP * 6);
       const scale = 1 + pop * 0.08;
-      const cx = b.x + b.w/2;
-      const cy = b.y + b.h/2;
-
-      const w = b.w * scale;
-      const h = b.h * scale;
-      const x = cx - w/2;
-      const y = cy - h/2;
+      const cx = b.x + b.w/2, cy = b.y + b.h/2;
+      const w = b.w * scale, h = b.h * scale;
+      const x = cx - w/2, y = cy - h/2;
 
       const t = b.hp / b.hpMax;
       const [r,g,bl] = b.col;
-      const alpha = 0.86;
-      const fill = `rgba(${Math.floor(r*255)},${Math.floor(g*255)},${Math.floor(bl*255)},${alpha})`;
+      const fill = `rgba(${Math.floor(r*255)},${Math.floor(g*255)},${Math.floor(bl*255)},0.86)`;
 
       ctx.shadowColor = `rgba(${Math.floor(r*255)},${Math.floor(g*255)},${Math.floor(bl*255)},0.35)`;
       ctx.shadowBlur = 14;
 
-      const rr = 9;
       ctx.fillStyle = fill;
-      roundRect(x, y, w, h, rr);
+      roundRect(x, y, w, h, 9);
       ctx.fill();
 
       ctx.shadowBlur = 0;
       ctx.strokeStyle = "rgba(255,255,255,0.16)";
       ctx.lineWidth = 1;
-      roundRect(x + 0.5, y + 0.5, w - 1, h - 1, rr);
+      roundRect(x + 0.5, y + 0.5, w - 1, h - 1, 9);
       ctx.stroke();
 
       if (b.hpMax > 1) {
@@ -987,9 +983,8 @@
   }
 
   function drawCenterText() {
-    if (!state.running) return;
-    if (state.paused) return;
-    if (ball.stuck && !state.gameOver) {
+    if (state.paused || state.gameOver) return;
+    if (ball.stuck) {
       ctx.save();
       ctx.fillStyle = "rgba(255,255,255,0.86)";
       ctx.font = "700 28px system-ui, sans-serif";
@@ -1014,8 +1009,8 @@
   }
 
   function render() {
-    const sx = (state.flashEnabled ? (Math.random() * 2 - 1) * state.shake : 0);
-    const sy = (state.flashEnabled ? (Math.random() * 2 - 1) * state.shake : 0);
+    const sx = (state.flashEnabled ? (Math.random()*2-1) * state.shake : 0);
+    const sy = (state.flashEnabled ? (Math.random()*2-1) * state.shake : 0);
 
     ctx.save();
     ctx.clearRect(0, 0, W, H);
@@ -1033,7 +1028,6 @@
   }
 
   // ===== Loop =====
-  const STEP = 1 / 60;
   function frame(ts) {
     if (!state.lastTs) state.lastTs = ts;
     const dt = Math.min(0.05, (ts - state.lastTs) / 1000);
@@ -1056,6 +1050,7 @@
     restart(true);
     setStatus("準備完了", "Spaceで開始。");
     state.paused = true;
+
     requestAnimationFrame(frame);
   }
 
