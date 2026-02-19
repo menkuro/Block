@@ -13,8 +13,11 @@
       --muted: rgba(255,255,255,0.65);
       --accent: #7dd3fc;
       --danger: #fb7185;
+      --good: #86efac;
+      --warn: #fde047;
+      --vio: #c4b5fd;
     }
-    html, body { height: 100%; margin: 0; background: radial-gradient(1200px 800px at 70% 20%, #16223f 0%, var(--bg) 55%, #070a12 100%); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", Meiryo, sans-serif; }
+    html, body { height: 100%; margin: 0; background: radial-gradient(1200px 800px at 70% 20%, #16223f 0%, var(--bg) 55%, #070a12 100%); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", Meiragino, Meiryo, sans-serif; }
     .wrap { display: grid; grid-template-rows: auto 1fr auto; height: 100%; }
     header, footer { padding: 12px 14px; display: flex; align-items: center; gap: 12px; }
     header { border-bottom: 1px solid rgba(255,255,255,0.10); background: rgba(0,0,0,0.15); backdrop-filter: blur(8px); }
@@ -89,7 +92,6 @@
       letter-spacing: 0.02em;
       margin: 0 2px;
     }
-    .danger { color: var(--danger); }
     .sr { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
   </style>
 </head>
@@ -111,18 +113,23 @@
         <div class="pill">残機 <strong id="lives">3</strong></div>
         <div class="pill">レベル <strong id="level">1</strong></div>
         <div class="pill">倍率 <strong id="mult">1.0</strong></div>
+        <div class="pill" id="buffs" style="display:none;">バフ <strong id="buffText">-</strong></div>
       </div>
       <div class="toast" aria-hidden="true">
         <div class="card" id="hintCard">
           <h2>操作</h2>
           <p>
             <span class="kbd">←</span><span class="kbd">→</span> or <span class="kbd">A</span><span class="kbd">D</span> / マウス・タッチでパドル移動。
-            <span class="kbd">Space</span>で開始。<span class="kbd">P</span>で停止。<span class="kbd">R</span>で再開。
+            <span class="kbd">Space</span>で開始。<span class="kbd">P</span>で停止。<span class="kbd">R</span>でリスタート。
           </p>
         </div>
         <div class="card" id="statusCard" style="display:none;">
           <h2 id="statusTitle">状態</h2>
           <p id="statusBody">テキスト</p>
+        </div>
+        <div class="card" id="msgCard" style="display:none;">
+          <h2 id="msgTitle">アイテム</h2>
+          <p id="msgBody">テキスト</p>
         </div>
       </div>
       <div class="sr" id="liveRegion" aria-live="polite"></div>
@@ -148,7 +155,7 @@
       </select>
     </label>
     <div class="spacer"></div>
-    <div class="pill"><span style="color:var(--muted);">哲学の要約:</span> 「苦労は忘れていい。ミスは残る。」</div>
+    <div class="pill"><span style="color:rgba(255,255,255,0.65);">哲学の要約:</span> 「苦労は忘れていい。ミスは残る。」</div>
   </footer>
 </div>
 
@@ -156,20 +163,23 @@
 (() => {
   "use strict";
 
-  // ===== Canvas / HiDPI =====
   const canvas = document.getElementById("c");
   const ctx = canvas.getContext("2d", { alpha: true });
-  const stage = document.getElementById("stage");
 
   const ui = {
     score: document.getElementById("score"),
     lives: document.getElementById("lives"),
     level: document.getElementById("level"),
     mult: document.getElementById("mult"),
+    buffs: document.getElementById("buffs"),
+    buffText: document.getElementById("buffText"),
     hintCard: document.getElementById("hintCard"),
     statusCard: document.getElementById("statusCard"),
     statusTitle: document.getElementById("statusTitle"),
     statusBody: document.getElementById("statusBody"),
+    msgCard: document.getElementById("msgCard"),
+    msgTitle: document.getElementById("msgTitle"),
+    msgBody: document.getElementById("msgBody"),
     liveRegion: document.getElementById("liveRegion"),
     btnRestart: document.getElementById("btnRestart"),
     btnPause: document.getElementById("btnPause"),
@@ -179,7 +189,6 @@
   };
 
   function fitCanvas() {
-    // CSSで伸縮。内部解像度は固定でOK。必要ならここでDPR調整。
     const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
     const w = 960, h = 720;
     canvas.width = Math.floor(w * dpr);
@@ -191,14 +200,9 @@
   fitCanvas();
   window.addEventListener("resize", fitCanvas);
 
-  // ===== Minimal Audio (WebAudio) =====
-  // 重要: 「撃墜音」(ブロック破壊) > ヒット音 > ボイス(ない)
+  // ===== Audio =====
   let audioCtx = null;
-  const audioState = {
-    enabled: true,
-    master: null,
-    limiter: null,
-  };
+  const audioState = { enabled: true, master: null, limiter: null };
 
   function ensureAudio() {
     if (!audioState.enabled) return;
@@ -207,7 +211,6 @@
     audioState.master = audioCtx.createGain();
     audioState.master.gain.value = 0.65;
 
-    // 簡易リミッター風: DynamicsCompressor
     audioState.limiter = audioCtx.createDynamicsCompressor();
     audioState.limiter.threshold.value = -12;
     audioState.limiter.knee.value = 20;
@@ -246,7 +249,6 @@
     const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
     const data = buffer.getChannelData(0);
     for (let i = 0; i < bufferSize; i++) {
-      // 短いノイズ。アタック強めで残響少なめ。
       const env = 1 - i / bufferSize;
       data[i] = (Math.random() * 2 - 1) * env;
     }
@@ -262,23 +264,12 @@
   }
 
   const SFX = {
-    brick() { // 撃墜音（最重要）
-      noiseHit({ dur: 0.05, gain: 0.14 });
-      beep({ freq: 880, dur: 0.04, type: "square", gain: 0.10 });
-    },
-    paddle() { // ヒット音
-      beep({ freq: 520, dur: 0.04, type: "triangle", gain: 0.08 });
-    },
-    wall() {
-      beep({ freq: 320, dur: 0.03, type: "sine", gain: 0.06 });
-    },
-    lose() {
-      beep({ freq: 140, dur: 0.10, type: "sawtooth", gain: 0.12, attack: 0.002, release: 0.08 });
-    },
-    win() {
-      beep({ freq: 660, dur: 0.06, type: "triangle", gain: 0.10 });
-      setTimeout(() => beep({ freq: 990, dur: 0.07, type: "triangle", gain: 0.10 }), 90);
-    }
+    brick() { noiseHit({ dur: 0.05, gain: 0.14 }); beep({ freq: 880, dur: 0.04, type: "square", gain: 0.10 }); },
+    paddle() { beep({ freq: 520, dur: 0.04, type: "triangle", gain: 0.08 }); },
+    wall() { beep({ freq: 320, dur: 0.03, type: "sine", gain: 0.06 }); },
+    lose() { beep({ freq: 140, dur: 0.10, type: "sawtooth", gain: 0.12, attack: 0.002, release: 0.08 }); },
+    win() { beep({ freq: 660, dur: 0.06, type: "triangle", gain: 0.10 }); setTimeout(() => beep({ freq: 990, dur: 0.07, type: "triangle", gain: 0.10 }), 90); },
+    item() { beep({ freq: 740, dur: 0.05, type: "triangle", gain: 0.10 }); setTimeout(() => beep({ freq: 1040, dur: 0.06, type: "triangle", gain: 0.10 }), 60); }
   };
 
   // ===== Game State =====
@@ -294,27 +285,31 @@
     mult: 1.0,
     speedMul: 1.0,
     startedOnce: false,
-    // feedback
+
     flashEnabled: true,
-    flash: 0,         // 0..1
-    shake: 0,         // px
-    hitStop: 0,       // seconds
-    // input
+    flash: 0,
+    shake: 0,
+    hitStop: 0,
+
+    // 連続減少対策ロック（保険）
+    respawnLock: 0,
+
     keys: new Set(),
     pointerX: null,
     pointerActive: false,
-    // time
+
     lastTs: 0,
     acc: 0,
   };
 
   const paddle = {
+    baseW: 140,
     w: 140,
     h: 16,
     x: W/2,
     y: H - 70,
     vx: 0,
-    speed: 820, // px/s
+    speed: 820,
   };
 
   const ball = {
@@ -323,8 +318,18 @@
     y: H - 90,
     vx: 280,
     vy: -420,
-    speed: 520, // base target
-    stuck: true, // stuck to paddle until start
+    speed: 520,
+    stuck: true,
+  };
+
+  const effects = { wide: 0, slow: 0, pierce: 0 };
+  const powerups = [];
+
+  const ITEM = {
+    WIDE: { key: "WIDE", name: "ワイド", desc: "パドル拡大(15秒)", color: "rgba(134,239,172,0.95)", tag: "W" },
+    SLOW: { key: "SLOW", name: "スロー", desc: "ボール減速(10秒)", color: "rgba(253,224,71,0.95)", tag: "S" },
+    PIERCE: { key: "PIERCE", name: "貫通", desc: "ブロック貫通(8秒)", color: "rgba(196,181,253,0.95)", tag: "P" },
+    LIFE: { key: "LIFE", name: "1UP", desc: "残機+1(上限5)", color: "rgba(125,211,252,0.95)", tag: "+1" },
   };
 
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
@@ -333,13 +338,12 @@
     ball.stuck = stuck;
     ball.x = paddle.x;
     ball.y = paddle.y - paddle.h/2 - ball.r - 2;
-    // ランダム性は少し。完全ランダムは理不尽。
     const dir = (Math.random() < 0.5 ? -1 : 1);
     ball.vx = 260 * dir;
     ball.vy = -440;
   }
 
-  // ===== Bricks / Levels =====
+  // ===== Bricks =====
   const bricks = {
     cols: 11,
     rows: 6,
@@ -366,9 +370,8 @@
     ];
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
-        // パターン: 無難じゃなく、でも理解はできる
         const mask = (r + lv) % 2 === 0 ? 1 : 0;
-        if (mask && (c === 0 || c === cols-1) && r < 2) continue; // 少し抜く
+        if (mask && (c === 0 || c === cols-1) && r < 2) continue;
         const hp = 1 + Math.floor((lv-1)/3) + (r >= rows-2 ? 1 : 0);
         const col = colors[(r + lv) % colors.length];
         bricks.list.push({
@@ -380,26 +383,32 @@
           hpMax: hp,
           col,
           alive: true,
-          pop: 0, // pop animation
+          pop: 0,
         });
       }
     }
+    powerups.length = 0;
   }
 
-  // ===== Player-first UX helpers =====
-  function announce(msg) {
-    ui.liveRegion.textContent = msg;
-  }
+  // ===== UX =====
+  function announce(msg) { ui.liveRegion.textContent = msg; }
   function setStatus(title, body) {
     ui.statusTitle.textContent = title;
     ui.statusBody.textContent = body;
     ui.statusCard.style.display = "block";
   }
-  function clearStatus() {
-    ui.statusCard.style.display = "none";
-  }
+  function clearStatus() { ui.statusCard.style.display = "none"; }
 
-  // ===== Start / Restart =====
+  let msgTimer = 0;
+  function showMsg(title, body, ms = 1200) {
+    ui.msgTitle.textContent = title;
+    ui.msgBody.textContent = body;
+    ui.msgCard.style.display = "block";
+    msgTimer = ms / 1000;
+  }
+  function hideMsg() { ui.msgCard.style.display = "none"; msgTimer = 0; }
+
+  // ===== Restart =====
   function restart(all = true) {
     state.running = true;
     state.paused = false;
@@ -407,8 +416,15 @@
     state.flash = 0;
     state.shake = 0;
     state.hitStop = 0;
+    state.respawnLock = 0;
+
     state.mult = 1.0;
     state.speedMul = parseFloat(ui.selSpeed.value || "1.0");
+
+    effects.wide = 0; effects.slow = 0; effects.pierce = 0;
+    paddle.w = paddle.baseW;
+    powerups.length = 0;
+
     if (all) {
       state.level = 1;
       state.score = 0;
@@ -420,6 +436,7 @@
     resetBall(true);
     ui.hintCard.style.display = state.startedOnce ? "none" : "block";
     clearStatus();
+    hideMsg();
     syncUI();
     announce("リスタート");
   }
@@ -429,20 +446,15 @@
     const k = e.key.toLowerCase();
     if (["arrowleft","arrowright","a","d","p","r"," ","space"].includes(k) || e.code === "Space") e.preventDefault();
     state.keys.add(k);
-    if (e.code === "Space" || k === " " || k === "space") {
-      userStart();
-    } else if (k === "p") {
-      togglePause();
-    } else if (k === "r") {
-      restart(false);
-    }
+    if (e.code === "Space" || k === " " || k === "space") userStart();
+    else if (k === "p") togglePause();
+    else if (k === "r") restart(false);
   }, { passive: false });
 
   window.addEventListener("keyup", (e) => {
     state.keys.delete(e.key.toLowerCase());
   });
 
-  // Pointer: mouse/touch
   function pointerToWorld(clientX) {
     const rect = canvas.getBoundingClientRect();
     const nx = (clientX - rect.left) / rect.width;
@@ -472,7 +484,6 @@
   window.addEventListener("touchmove", onPointerMove, { passive: false });
   window.addEventListener("touchend", onPointerUp);
 
-  // ===== UI toggles =====
   ui.togSound.addEventListener("change", () => {
     audioState.enabled = !!ui.togSound.checked;
     if (audioState.enabled) ensureAudio();
@@ -491,28 +502,23 @@
   function togglePause() {
     if (!state.running) return;
     state.paused = !state.paused;
-    if (state.paused) {
-      setStatus("一時停止", "Spaceで再開。今のうちに心を整えろ。");
-      announce("一時停止");
-    } else {
-      clearStatus();
-      announce("再開");
-      if (audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(()=>{});
-    }
+    if (state.paused) { setStatus("一時停止", "Spaceで再開。"); announce("一時停止"); }
+    else { clearStatus(); announce("再開"); if (audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(()=>{}); }
   }
 
   function userStart() {
     if (!state.running) state.running = true;
     state.startedOnce = true;
     ui.hintCard.style.display = "none";
-    clearStatus();
-    if (state.paused) state.paused = false;
+    if (state.gameOver) return;
+
+    if (state.paused) { clearStatus(); state.paused = false; announce("再開"); }
+
     if (ball.stuck) {
+      state.respawnLock = 0;
       ball.stuck = false;
-      // 最初の一手は気持ちよく。ちょい速め。
       normalizeBallSpeed(ball.speed * 1.02);
       announce("開始");
-      // ユーザー操作でオーディオ解禁
       if (audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(()=>{});
     }
   }
@@ -542,24 +548,23 @@
     return (dx*dx + dy*dy) <= cr*cr;
   }
 
+  function rectRectCollide(ax, ay, aw, ah, bx, by, bw, bh) {
+    return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+  }
+
   function resolveBrickCollision(b) {
-    // 進行方向からざっくり面を推定。十分、というかこれで気持ちいい。
     const cx = ball.x, cy = ball.y;
     const prevX = cx - ball.vx * (1/60), prevY = cy - ball.vy * (1/60);
     const bx = b.x, by = b.y, bw = b.w, bh = b.h;
 
-    // 前フレーム位置でどこから入ったか推定
     const fromLeft = prevX <= bx - ball.r;
     const fromRight = prevX >= bx + bw + ball.r;
     const fromTop = prevY <= by - ball.r;
     const fromBottom = prevY >= by + bh + ball.r;
 
-    if ((fromLeft && !fromRight) || (fromRight && !fromLeft)) {
-      ball.vx *= -1;
-    } else if ((fromTop && !fromBottom) || (fromBottom && !fromTop)) {
-      ball.vy *= -1;
-    } else {
-      // 角っぽい。無難に反転
+    if ((fromLeft && !fromRight) || (fromRight && !fromLeft)) ball.vx *= -1;
+    else if ((fromTop && !fromBottom) || (fromBottom && !fromTop)) ball.vy *= -1;
+    else {
       const dx = (cx - (bx + bw/2)) / (bw/2);
       const dy = (cy - (by + bh/2)) / (bh/2);
       if (Math.abs(dx) > Math.abs(dy)) ball.vx *= -1;
@@ -572,30 +577,77 @@
     const ry = paddle.y - paddle.h/2;
     if (!rectCircleCollide(rx, ry, paddle.w, paddle.h, ball.x, ball.y, ball.r)) return false;
 
-    // 上方向へ反射。打点で角度を作る。デファクト。
     const hitX = (ball.x - paddle.x) / (paddle.w/2);
-    const angle = clamp(hitX, -1, 1) * (Math.PI * 0.36); // 0.36π ≒ 65度
+    const angle = clamp(hitX, -1, 1) * (Math.PI * 0.36);
     const sp = Math.max(ball.speed * 0.90, length(ball.vx, ball.vy));
     ball.vx = sp * Math.sin(angle);
     ball.vy = -Math.abs(sp * Math.cos(angle));
-
-    // めり込み補正
     ball.y = ry - ball.r - 0.5;
 
-    // コンボ倍率: 無駄に理不尽にならないよう上限
     state.mult = clamp(state.mult + 0.05, 1.0, 2.0);
-
     SFX.paddle();
     hitFeedback(0.8);
     return true;
   }
 
-  // ===== Update / Render =====
+  // ===== Items =====
+  function pickItemType() {
+    const r = Math.random();
+    if (r < 0.40) return ITEM.WIDE;
+    if (r < 0.68) return ITEM.SLOW;
+    if (r < 0.88) return ITEM.PIERCE;
+    return ITEM.LIFE;
+  }
+
+  function spawnItemFromBrick(b) {
+    const chance = 0.18 + Math.min(0.08, state.level * 0.01);
+    if (Math.random() > chance) return;
+    const it = pickItemType();
+    powerups.push({
+      x: b.x + b.w/2,
+      y: b.y + b.h/2,
+      vy: 210 + state.level * 10,
+      w: 44,
+      h: 18,
+      type: it.key,
+      alive: true,
+      bob: Math.random() * Math.PI * 2,
+    });
+  }
+
+  function applyItem(typeKey) {
+    const it = ITEM[typeKey] || null;
+    if (!it) return;
+
+    if (typeKey === "WIDE") effects.wide = Math.max(effects.wide, 15);
+    if (typeKey === "SLOW") effects.slow = Math.max(effects.slow, 10);
+    if (typeKey === "PIERCE") effects.pierce = Math.max(effects.pierce, 8);
+    if (typeKey === "LIFE") state.lives = clamp(state.lives + 1, 0, 5);
+
+    SFX.item();
+    hitFeedback(0.6);
+    showMsg("アイテム獲得", it.name + "： " + it.desc);
+    announce("アイテム " + it.name);
+    syncUI();
+  }
+
+  // ===== UI sync =====
   function syncUI() {
     ui.score.textContent = String(Math.floor(state.score));
     ui.lives.textContent = String(state.lives);
     ui.level.textContent = String(state.level);
     ui.mult.textContent = state.mult.toFixed(1);
+
+    const tags = [];
+    if (effects.wide > 0) tags.push("ワイド");
+    if (effects.slow > 0) tags.push("スロー");
+    if (effects.pierce > 0) tags.push("貫通");
+    if (tags.length) {
+      ui.buffs.style.display = "inline-flex";
+      ui.buffText.textContent = tags.join(" / ");
+    } else {
+      ui.buffs.style.display = "none";
+    }
   }
 
   function nextLevel() {
@@ -603,21 +655,28 @@
     state.mult = clamp(state.mult + 0.15, 1.0, 2.0);
     makeLevel(state.level);
     resetBall(true);
-    setStatus("レベル " + state.level, "Spaceで開始。テンポは落とすな。");
+    state.paused = true;
+    setStatus("レベル " + state.level, "Spaceで開始。");
     announce("レベルアップ");
     SFX.win();
     syncUI();
   }
 
   function loseLife() {
+    if (state.respawnLock > 0) return;
+    state.respawnLock = 0.6;
+
     state.lives -= 1;
     state.mult = 1.0;
     SFX.lose();
     hitFeedback(1.2);
+
+    // 「残機が減り続ける」事故を根絶: 必ず停止
+    state.paused = true;
+
     if (state.lives <= 0) {
       state.gameOver = true;
-      state.paused = true;
-      setStatus("ゲームオーバー", "Rでやり直し。苦労は忘れろ、スコアは残る。");
+      setStatus("ゲームオーバー", "Rでリスタート。苦労は忘れろ、スコアは残る。");
       announce("ゲームオーバー");
     } else {
       resetBall(true);
@@ -627,153 +686,176 @@
     syncUI();
   }
 
+  // ===== Update =====
   function update(dt) {
-    // dt: seconds
     if (!state.running) return;
-    if (state.paused) return;
 
-    // speed multiplier
-    const sm = state.speedMul;
+    if (msgTimer > 0) {
+      msgTimer = Math.max(0, msgTimer - dt);
+      if (msgTimer === 0) hideMsg();
+    }
 
-    // hitstop: 動かさないが、演出は進める
-    if (state.hitStop > 0) {
-      state.hitStop = Math.max(0, state.hitStop - dt);
-      // flash decay still
+    if (state.respawnLock > 0) state.respawnLock = Math.max(0, state.respawnLock - dt);
+
+    effects.wide = Math.max(0, effects.wide - dt);
+    effects.slow = Math.max(0, effects.slow - dt);
+    effects.pierce = Math.max(0, effects.pierce - dt);
+
+    paddle.w = paddle.baseW * (effects.wide > 0 ? 1.35 : 1.0);
+
+    if (state.paused) {
       state.flash = Math.max(0, state.flash - dt * 2.0);
       state.shake = Math.max(0, state.shake - dt * 20);
       return;
     }
 
-    // Input -> paddle target velocity
+    if (state.hitStop > 0) {
+      state.hitStop = Math.max(0, state.hitStop - dt);
+      state.flash = Math.max(0, state.flash - dt * 2.0);
+      state.shake = Math.max(0, state.shake - dt * 20);
+      return;
+    }
+
+    const sm = state.speedMul;
+
     let dir = 0;
     if (state.keys.has("arrowleft") || state.keys.has("a")) dir -= 1;
     if (state.keys.has("arrowright") || state.keys.has("d")) dir += 1;
 
     const desired = dir * paddle.speed;
-    // pointer overrides for player convenience (and market reality)
     if (state.pointerX != null) {
       const dx = state.pointerX - paddle.x;
       paddle.vx = clamp(dx * 10, -paddle.speed * 1.4, paddle.speed * 1.4);
     } else {
-      // accel smoothing
       paddle.vx += (desired - paddle.vx) * clamp(dt * 12, 0, 1);
     }
     paddle.x += paddle.vx * dt * sm;
     paddle.x = clamp(paddle.x, paddle.w/2, W - paddle.w/2);
 
-    // Ball
     if (ball.stuck) {
       ball.x = paddle.x;
       ball.y = paddle.y - paddle.h/2 - ball.r - 2;
-      // multiplier slowly decays while waiting so idle isn't rewarded
       state.mult = Math.max(1.0, state.mult - dt * 0.12);
+      syncUI();
       return;
     }
 
-    // keep speed consistent, increase slightly with level
-    const targetSpeed = (ball.speed + state.level * 12) * sm;
+    const slowMul = (effects.slow > 0 ? 0.78 : 1.0);
+    const targetSpeed = (ball.speed + state.level * 12) * sm * slowMul;
     normalizeBallSpeed(targetSpeed);
 
     ball.x += ball.vx * dt;
     ball.y += ball.vy * dt;
 
-    // Walls
-    if (ball.x - ball.r <= 0) {
-      ball.x = ball.r;
-      ball.vx *= -1;
-      SFX.wall();
-      hitFeedback(0.35);
-    } else if (ball.x + ball.r >= W) {
-      ball.x = W - ball.r;
-      ball.vx *= -1;
-      SFX.wall();
-      hitFeedback(0.35);
-    }
-    if (ball.y - ball.r <= 0) {
-      ball.y = ball.r;
-      ball.vy *= -1;
-      SFX.wall();
-      hitFeedback(0.35);
-    }
-    if (ball.y - ball.r > H + 40) {
+    if (ball.x - ball.r <= 0) { ball.x = ball.r; ball.vx *= -1; SFX.wall(); hitFeedback(0.35); }
+    else if (ball.x + ball.r >= W) { ball.x = W - ball.r; ball.vx *= -1; SFX.wall(); hitFeedback(0.35); }
+
+    if (ball.y - ball.r <= 0) { ball.y = ball.r; ball.vy *= -1; SFX.wall(); hitFeedback(0.35); }
+
+    if (state.respawnLock === 0 && (ball.y - ball.r > H + 40)) {
       loseLife();
       return;
     }
 
-    // Paddle collision
     handlePaddleCollision();
 
-    // Bricks collision: check near
     let aliveCount = 0;
     for (const b of bricks.list) {
       if (!b.alive) continue;
       aliveCount++;
       if (rectCircleCollide(b.x, b.y, b.w, b.h, ball.x, ball.y, ball.r)) {
-        resolveBrickCollision(b);
+        if (effects.pierce <= 0) resolveBrickCollision(b);
         b.hp -= 1;
         b.pop = 1.0;
+
         SFX.brick();
         hitFeedback(1.0);
-        // score
+
         const base = 120;
         state.score += base * state.mult * (1 + 0.1 * (b.hpMax - 1));
-        // Slightly ramp multiplier on brick hit
         state.mult = clamp(state.mult + 0.02, 1.0, 2.0);
+
         if (b.hp <= 0) {
           b.alive = false;
-          // bonus for break
           state.score += 80 * state.mult;
+          spawnItemFromBrick(b);
         }
+
+        if (effects.pierce > 0) {
+          const sp = length(ball.vx, ball.vy);
+          if (sp > 1e-3) {
+            ball.x += (ball.vx / sp) * 4;
+            ball.y += (ball.vy / sp) * 4;
+          }
+        }
+
         syncUI();
-        break; // 1フレーム多重ヒットは不親切になりやすいので禁止
+        break;
       }
     }
 
-    // if all cleared
-    if (aliveCount === 0) {
-      nextLevel();
+    const prx = paddle.x - paddle.w/2, pry = paddle.y - paddle.h/2;
+    for (const p of powerups) {
+      if (!p.alive) continue;
+      p.bob += dt * 6;
+      p.y += p.vy * dt;
+      const x = p.x - p.w/2;
+      const y = p.y - p.h/2 + Math.sin(p.bob) * 2;
+
+      if (rectRectCollide(x, y, p.w, p.h, prx, pry, paddle.w, paddle.h)) {
+        p.alive = false;
+        applyItem(p.type);
+      } else if (p.y - p.h/2 > H + 30) {
+        p.alive = false;
+      }
+    }
+    for (let i = powerups.length - 1; i >= 0; i--) {
+      if (!powerups[i].alive) powerups.splice(i, 1);
     }
 
-    // feedback decay
+    if (aliveCount === 0) nextLevel();
+
     state.flash = Math.max(0, state.flash - dt * 2.0);
     state.shake = Math.max(0, state.shake - dt * 20);
-    // multiplier decays slowly to avoid runaway
     state.mult = Math.max(1.0, state.mult - dt * 0.05);
+    syncUI();
+  }
+
+  // ===== Render =====
+  function roundRect(x, y, w, h, r) {
+    const rr = Math.min(r, w/2, h/2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
   }
 
   function drawBackground() {
-    // Subtle grid and vignette. 見やすさ優先。
     ctx.save();
     ctx.fillStyle = "rgba(0,0,0,0.20)";
     ctx.fillRect(0, 0, W, H);
 
-    // grid
     ctx.globalAlpha = 0.22;
     ctx.strokeStyle = "rgba(255,255,255,0.10)";
     ctx.lineWidth = 1;
     const step = 40;
     for (let x = 0; x <= W; x += step) {
-      ctx.beginPath();
-      ctx.moveTo(x + 0.5, 0);
-      ctx.lineTo(x + 0.5, H);
-      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, H); ctx.stroke();
     }
     for (let y = 0; y <= H; y += step) {
-      ctx.beginPath();
-      ctx.moveTo(0, y + 0.5);
-      ctx.lineTo(W, y + 0.5);
-      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(W, y + 0.5); ctx.stroke();
     }
     ctx.globalAlpha = 1;
 
-    // top gradient band behind bricks
     const g = ctx.createLinearGradient(0, 0, 0, 220);
     g.addColorStop(0, "rgba(125, 211, 252, 0.18)");
     g.addColorStop(1, "rgba(0,0,0,0.0)");
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, W, 260);
 
-    // vignette
     const v = ctx.createRadialGradient(W/2, H/2, 120, W/2, H/2, 560);
     v.addColorStop(0, "rgba(0,0,0,0.0)");
     v.addColorStop(1, "rgba(0,0,0,0.55)");
@@ -782,19 +864,96 @@
     ctx.restore();
   }
 
+  function drawBricks() {
+    ctx.save();
+    for (const b of bricks.list) {
+      if (!b.alive) continue;
+
+      const pop = b.pop;
+      b.pop = Math.max(0, b.pop - 1/60 * 6);
+      const scale = 1 + pop * 0.08;
+      const cx = b.x + b.w/2;
+      const cy = b.y + b.h/2;
+
+      const w = b.w * scale;
+      const h = b.h * scale;
+      const x = cx - w/2;
+      const y = cy - h/2;
+
+      const t = b.hp / b.hpMax;
+      const [r,g,bl] = b.col;
+      const alpha = 0.86;
+      const fill = `rgba(${Math.floor(r*255)},${Math.floor(g*255)},${Math.floor(bl*255)},${alpha})`;
+
+      ctx.shadowColor = `rgba(${Math.floor(r*255)},${Math.floor(g*255)},${Math.floor(bl*255)},0.35)`;
+      ctx.shadowBlur = 14;
+
+      const rr = 9;
+      ctx.fillStyle = fill;
+      roundRect(x, y, w, h, rr);
+      ctx.fill();
+
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = "rgba(255,255,255,0.16)";
+      ctx.lineWidth = 1;
+      roundRect(x + 0.5, y + 0.5, w - 1, h - 1, rr);
+      ctx.stroke();
+
+      if (b.hpMax > 1) {
+        ctx.fillStyle = "rgba(0,0,0,0.25)";
+        ctx.fillRect(x + 10, y + h - 8, w - 20, 3);
+        ctx.fillStyle = "rgba(255,255,255,0.65)";
+        ctx.fillRect(x + 10, y + h - 8, (w - 20) * t, 3);
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawItems() {
+    if (!powerups.length) return;
+    ctx.save();
+    ctx.font = "700 12px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (const p of powerups) {
+      if (!p.alive) continue;
+      const it = ITEM[p.type];
+      const x = p.x - p.w/2;
+      const y = p.y - p.h/2 + Math.sin(p.bob) * 2;
+
+      ctx.shadowColor = "rgba(0,0,0,0.35)";
+      ctx.shadowBlur = 10;
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
+      roundRect(x, y, p.w, p.h, 999);
+      ctx.fill();
+
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = it.color;
+      roundRect(x + 1, y + 1, p.w - 2, p.h - 2, 999);
+      ctx.fill();
+
+      ctx.strokeStyle = "rgba(255,255,255,0.22)";
+      ctx.lineWidth = 1;
+      roundRect(x + 0.5, y + 0.5, p.w - 1, p.h - 1, 999);
+      ctx.stroke();
+
+      ctx.fillStyle = "rgba(0,0,0,0.65)";
+      ctx.fillText(it.tag, p.x, y + p.h/2 + 0.5);
+    }
+    ctx.restore();
+  }
+
   function drawPaddle() {
     const x = paddle.x - paddle.w/2;
     const y = paddle.y - paddle.h/2;
 
     ctx.save();
-    // glow
     ctx.shadowColor = "rgba(125,211,252,0.40)";
     ctx.shadowBlur = 18;
     ctx.fillStyle = "rgba(125,211,252,0.30)";
     roundRect(x, y, paddle.w, paddle.h, 10);
     ctx.fill();
 
-    // body
     ctx.shadowBlur = 0;
     const g = ctx.createLinearGradient(0, y, 0, y + paddle.h);
     g.addColorStop(0, "rgba(255,255,255,0.22)");
@@ -819,7 +978,6 @@
     ctx.fillStyle = "rgba(255,255,255,0.92)";
     ctx.fill();
 
-    // highlight
     ctx.shadowBlur = 0;
     ctx.beginPath();
     ctx.arc(ball.x - ball.r*0.35, ball.y - ball.r*0.35, ball.r*0.35, 0, Math.PI * 2);
@@ -828,59 +986,9 @@
     ctx.restore();
   }
 
-  function drawBricks() {
-    ctx.save();
-    for (const b of bricks.list) {
-      if (!b.alive) continue;
-
-      // pop animation
-      const pop = b.pop;
-      b.pop = Math.max(0, b.pop - 1/60 * 6);
-      const scale = 1 + pop * 0.08;
-      const cx = b.x + b.w/2;
-      const cy = b.y + b.h/2;
-
-      const w = b.w * scale;
-      const h = b.h * scale;
-      const x = cx - w/2;
-      const y = cy - h/2;
-
-      // color based on hp
-      const t = b.hp / b.hpMax;
-      const [r,g,bl] = b.col;
-      const alpha = 0.86;
-      const fill = `rgba(${Math.floor(r*255)},${Math.floor(g*255)},${Math.floor(bl*255)},${alpha})`;
-
-      // glow
-      ctx.shadowColor = `rgba(${Math.floor(r*255)},${Math.floor(g*255)},${Math.floor(bl*255)},0.35)`;
-      ctx.shadowBlur = 14;
-
-      const rr = 9;
-      ctx.fillStyle = fill;
-      roundRect(x, y, w, h, rr);
-      ctx.fill();
-
-      ctx.shadowBlur = 0;
-      ctx.strokeStyle = "rgba(255,255,255,0.16)";
-      ctx.lineWidth = 1;
-      roundRect(x + 0.5, y + 0.5, w - 1, h - 1, rr);
-      ctx.stroke();
-
-      // hp pip
-      if (b.hpMax > 1) {
-        ctx.fillStyle = "rgba(0,0,0,0.25)";
-        ctx.fillRect(x + 10, y + h - 8, w - 20, 3);
-        ctx.fillStyle = "rgba(255,255,255,0.65)";
-        ctx.fillRect(x + 10, y + h - 8, (w - 20) * t, 3);
-      }
-    }
-    ctx.restore();
-  }
-
   function drawCenterText() {
     if (!state.running) return;
     if (state.paused) return;
-
     if (ball.stuck && !state.gameOver) {
       ctx.save();
       ctx.fillStyle = "rgba(255,255,255,0.86)";
@@ -890,13 +998,12 @@
 
       ctx.fillStyle = "rgba(255,255,255,0.62)";
       ctx.font = "500 14px system-ui, sans-serif";
-      ctx.fillText("不親切を作るくらいなら、ここで始め方を出す。以上。", W/2, H/2 + 18);
+      ctx.fillText("不親切を作るくらいなら、ここで始め方を出す。", W/2, H/2 + 18);
       ctx.restore();
     }
   }
 
   function drawOverlay() {
-    // flash
     if (state.flashEnabled && state.flash > 0.001) {
       ctx.save();
       ctx.globalAlpha = state.flash * 0.45;
@@ -906,19 +1013,7 @@
     }
   }
 
-  function roundRect(x, y, w, h, r) {
-    const rr = Math.min(r, w/2, h/2);
-    ctx.beginPath();
-    ctx.moveTo(x + rr, y);
-    ctx.arcTo(x + w, y, x + w, y + h, rr);
-    ctx.arcTo(x + w, y + h, x, y + h, rr);
-    ctx.arcTo(x, y + h, x, y, rr);
-    ctx.arcTo(x, y, x + w, y, rr);
-    ctx.closePath();
-  }
-
   function render() {
-    // screen shake
     const sx = (state.flashEnabled ? (Math.random() * 2 - 1) * state.shake : 0);
     const sy = (state.flashEnabled ? (Math.random() * 2 - 1) * state.shake : 0);
 
@@ -928,6 +1023,7 @@
 
     drawBackground();
     drawBricks();
+    drawItems();
     drawPaddle();
     drawBall();
     drawCenterText();
@@ -936,7 +1032,7 @@
     drawOverlay();
   }
 
-  // ===== Main loop: fixed timestep =====
+  // ===== Loop =====
   const STEP = 1 / 60;
   function frame(ts) {
     if (!state.lastTs) state.lastTs = ts;
@@ -944,7 +1040,6 @@
     state.lastTs = ts;
     state.acc += dt;
 
-    // 小細工より「動く」。ただそれだけで価値がある。
     while (state.acc >= STEP) {
       update(STEP);
       state.acc -= STEP;
@@ -953,14 +1048,13 @@
     requestAnimationFrame(frame);
   }
 
-  // ===== Init =====
   function init() {
     state.flashEnabled = !!ui.togFlash.checked;
     audioState.enabled = !!ui.togSound.checked;
     state.speedMul = parseFloat(ui.selSpeed.value || "1.0");
 
     restart(true);
-    setStatus("準備完了", "Spaceで開始。やる気を待つな。入力しろ。");
+    setStatus("準備完了", "Spaceで開始。");
     state.paused = true;
     requestAnimationFrame(frame);
   }
